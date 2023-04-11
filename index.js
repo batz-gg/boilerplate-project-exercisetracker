@@ -1,98 +1,131 @@
-const express = require('express')
-const app = express()
-const cors = require('cors')
-require('dotenv').config()
+// .env file can hold PORT / MONGO_URI variable if desired
+require('dotenv').config();
+
+const express = require('express');
 const bodyParser = require('body-parser');
+const cors = require('cors');
 
-app.use(cors())
-app.use(express.static('public'))
-app.get('/', (req, res) => {
-  res.sendFile(__dirname + '/views/index.html')
-});
+const {
+  createUser,
+  getUserById,
+  getAllUsers,
+  createExercise,
+  getFilteredExercisesByUserId: getAllExerciseByUserId,
+} = require('./middleware/middleware');
 
+const app = express();
+
+const formatDate = (date) => {
+  // Alternate possibility to avoid time zone translations:
+  // return new Date(date).toUTCString().slice(0, 16)
+
+  // Required to pass FCC tests
+  return new Date(date).toDateString();
+};
+
+// Log incoming requests in development:
+if (process.env.RUN_MODE === 'development') {
+  app.use((req, res, next) => {
+    console.log(
+      `${req.method} ${req.path}; IP=${req.ip}; https?=${req.secure}`,
+    );
+    next();
+  });
+}
+
+// enable CORS (https://en.wikipedia.org/wiki/Cross-origin_resource_sharing)
+// so that your API is remotely testable by FCC
+app.use(cors());
+
+// Parse url encoded bodies:
 app.use(bodyParser.urlencoded({ extended: false }));
 
-let users = [];
-let exercises = [];
+// Serve static files from 'public' folder
+// http://expressjs.com/en/starter/static-files.html
+app.use('/public', express.static('public'));
 
-app.post('/api/users', (req, res) => {
-  const username = req.body.username;
-  const user = { username, _id: users.length };
-  users.push(user);
-  res.json(user);
+// Send index.html on requests to root
+// http://expressjs.com/en/starter/basic-routing.html
+app.get('/', (req, res) => {
+  res.sendFile(__dirname + '/views/index.html');
 });
 
-app.get('/api/users', (req, res) => {
-  res.json(users);
+// GET request to `/api/users` shows all users:
+app.get('/api/users', getAllUsers, (req, res) => {
+  return res.json(res.locals.userDocumentArray);
 });
 
-app.post('/api/users/:_id/exercises', (req, res) => {
-  const userId = parseInt(req.params._id);
-  const user = users.find((user) => user._id === userId);
-
-  if (!user) {
-    res.status(404).send('Not found');
-    return;
-  }
-
-  const description = req.body.description;
-  const duration = parseInt(req.body.duration);
-  const date = req.body.date ? new Date(req.body.date) : new Date();
-
-  const exercise = { description, duration, date };
-  exercises.push({ userId, exercise });
-
-  res.json({
-    _id: user._id,
-    username: user.username,
-    date: date.toDateString(),
-           duration,
-           description,
-  });
+// POST request to `/api/users` to create a new user:
+app.post('/api/users', createUser, (req, res) => {
+  const { _id, username } = res.locals.userDocument;
+  return res.json({ _id, username });
 });
 
-app.get('/api/users/:_id/logs', (req, res) => {
-  const userId = parseInt(req.params._id);
-  const user = users.find((user) => user._id === userId);
+// GET request to `/api/users/:id/logs` returns full exercise log of user
+app.get(
+  '/api/users/:_id/logs',
+  getUserById,
+  getAllExerciseByUserId,
+  (req, res) => {
+    // Process Exercise documents into log:
+    const log = res.locals.exerciseDocumentArray.map(
+      ({ description, duration, date }) => ({
+        description,
+        duration,
+        date: formatDate(date),
+      }),
+    );
 
-  if (!user) {
-    res.status(404).send('Not found');
-    return;
-  }
+    const count = log.length;
+    const { _id, username } = res.locals.userDocument;
 
-  let userExercises = exercises.filter((item) => item.userId === userId).map((item) => item.exercise);
+    return res.json({
+      _id,
+      username,
+      filters: {
+        from: req.query.from || 'any',
+        to: req.query.to || 'any',
+        limit: parseInt(req.query.limit) || 'all',
+      },
+      count,
+      log,
+    });
+  },
+);
 
-  if (req.query.from || req.query.to) {
-    let fromDate = new Date(0);
-    let toDate = new Date();
+// POST request to `/api/users/:id/exercises` creates a new exercise document
+app.post(
+  '/api/users/:_id(\\w+)/exercises',
+  getUserById,
+  createExercise,
+  (req, res) => {
+    const { _id, username } = res.locals.userDocument;
+    const { description, duration, date } = res.locals.exerciseDocument;
 
-    if (req.query.from) {
-      fromDate = new Date(req.query.from);
-    }
+    return res.json({
+      _id,
+      username,
+      description,
+      duration,
+      date: formatDate(date),
+    });
+  },
+);
 
-    if (req.query.to) {
-      toDate = new Date(req.query.to);
-    }
-
-    userExercises = userExercises.filter((exercise) => exercise.date >= fromDate && exercise.date <= toDate);
-  }
-
-  if (req.query.limit) {
-    userExercises = userExercises.slice(0, req.query.limit);
-  }
-
-  res.json({
-    _id: user._id,
-    username: user.username,
-    count: userExercises.length,
-    log: userExercises.map((exercise) => ({
-      description: exercise.description,
-      duration: exercise.duration,
-      date: exercise.date.toDateString(),
-    })),
-  });
+// 404 page not found:
+app.get('*', (req, res) => {
+  // Redirect to index
+  res.redirect('/');
 });
 
+// Internal Error Handler:
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).send('Internal Server error: See Server Logs');
+});
+
+// Have server listen on PORT or default to 3000
+// http://localhost:3000/
 const listener = app.listen(process.env.PORT || 3000, () => {
-  console.log('Your app is listening on port ' + listener.address().port)
-})
+  console.log('Your app is listening on port ' + listener.address().port);
+});

@@ -3,3 +3,5 @@ node_modules
 .prettierignore
 package-lock.json
 yarn.lock
+replit.nix
+.replit
